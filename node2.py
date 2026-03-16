@@ -130,7 +130,7 @@ def calc_dihedral(p1, p2, p3, p4):
         return 0.0
 
 def calculate_features_for_frame(frame_lines, target_residues):
-    """计算单个帧的所有特征（phi/psi、距离）"""
+    """计算单个帧的phi/psi特征"""
     # 提取所有原子的坐标并分组
     atom_data = {}
     residue_keys = set()
@@ -165,7 +165,6 @@ def calculate_features_for_frame(frame_lines, target_residues):
     
     # 初始化结果字典
     phi_psi_map = {}
-    distance_map = {}
     
     # 计算phi/psi角
     for key in residue_keys:
@@ -208,61 +207,7 @@ def calculate_features_for_frame(frame_lines, target_residues):
         
         phi_psi_map[key] = [phi_sin, phi_cos, psi_sin, psi_cos]
     
-    # 计算距离特征
-    for key in residue_keys:
-        chain_id, res_id = key
-        if res_id not in target_residues:
-            continue
-            
-        atoms = atom_data.get(key, {})
-        if not atoms:
-            distance_map[key] = [0.0, 0.0, 0.0, 0.0]
-            continue
-            
-        # 获取残基名称和关键原子
-        first_atom = next(iter(atoms.values()))
-        res_name = first_atom['residue_name']
-        key_atom_name = RESIDUE_ATOM_MAP.get(res_name, 'CA')
-        
-        # 获取所需原子坐标
-        n_coord = None
-        ca_coord = None
-        c_coord = None
-        key_atom_coord = None
-        
-        for atom_info in atoms.values():
-            atom_name = atom_info['atom_name']
-            if atom_name == 'N':
-                n_coord = atom_info['coords']
-            elif atom_name == 'CA':
-                ca_coord = atom_info['coords']
-            elif atom_name == 'C':
-                c_coord = atom_info['coords']
-            elif atom_name == key_atom_name:
-                key_atom_coord = atom_info['coords']
-        
-        # 计算距离特征 - 调整顺序
-        distances = [0.0, 0.0, 0.0, 0.0]
-        
-        # 1. CA和关键原子之间的距离（原第6维）
-        if ca_coord is not None and key_atom_coord is not None:
-            distances[0] = np.linalg.norm(ca_coord - key_atom_coord)
-        
-        # 2. N和关键原子之间的距离（原第7维）
-        if n_coord is not None and key_atom_coord is not None:
-            distances[1] = np.linalg.norm(n_coord - key_atom_coord)
-        
-        # 3. C和关键原子之间的距离（原第8维）
-        if c_coord is not None and key_atom_coord is not None:
-            distances[2] = np.linalg.norm(c_coord - key_atom_coord)
-        
-        # 4. N和C原子之间的距离（原第5维）
-        if n_coord is not None and c_coord is not None:
-            distances[3] = np.linalg.norm(n_coord - c_coord)
-        
-        distance_map[key] = distances
-    
-    return phi_psi_map, distance_map
+    return phi_psi_map
 
 def process_pdb_file(pdb_path, output_dir, target_residues):
     """处理单个PDB文件，计算所有特征"""
@@ -279,7 +224,7 @@ def process_pdb_file(pdb_path, output_dir, target_residues):
             
         n_models = len(frames)
         print(f"  模型数: {n_models}")
-        last_output_time = time.time()
+        
         # 获取所有残基，但只保留在target_residues中的残基
         residue_keys = set()
         for line in frames[0]:
@@ -293,39 +238,19 @@ def process_pdb_file(pdb_path, output_dir, target_residues):
         
         n_residues = len(residue_keys)
         
-        # 初始化特征数组 (8维特征)
-        features = np.zeros((n_models, n_residues, 8))
+        # 初始化特征数组 (4维特征)
+        features = np.zeros((n_models, n_residues, 4))
         
         # 为每个模型计算特征
         for model_id in range(n_models):
-            # 一次性计算所有特征
-            phi_psi_map, distance_map = calculate_features_for_frame(
-                frames[model_id], target_residues
-            )
+            # 计算phi/psi特征
+            phi_psi_map = calculate_features_for_frame(frames[model_id], target_residues)
             
             # 将特征填充到数组中
             for i, key in enumerate(residue_keys):
-                chain_id, res_id = key
-                
                 # Phi/Psi特征 (4维)
                 phi_psi = phi_psi_map.get(key, [0.0, 1.0, 0.0, 1.0])
                 features[model_id, i, 0:4] = phi_psi
-                
-                # 距离特征 (4维) - 按新顺序
-                distances = distance_map.get(key, [0.0, 0.0, 0.0, 0.0])
-                features[model_id, i, 4:8] = distances
-            
-            # 只在每100个模型时输出
-            if (model_id + 1) % 100 == 0:
-                batch_elapsed = time.time() - last_output_time
-                
-                print(f"  模型 {model_id+1}/{n_models} 处理完成")
-                print(f"    最近100个模型耗时: {batch_elapsed:.4f}s")
-                
-                if n_residues > 0:
-                    print(f"    当前模型特征示例: {features[model_id][int(model_id/5)]}")
-                
-                last_output_time = time.time()
         
         # 保存为npy文件
         output_path = os.path.join(output_dir, f"{filename}.npy")
@@ -391,16 +316,15 @@ def main():
     total_elapsed = time.time() - total_start
     print(f"所有文件处理完成! 成功处理 {processed_files} 个PDB文件，总耗时: {total_elapsed:.2f}s")
     print(f"输出目录: {args.output_dir}")
-    print("特征维度: [帧数, 残基数（过滤后）, 8]")
+    print(f"特征维度: [帧数, 残基数（过滤后）, 4]")
     print("特征说明:")
-    print("  0-3: Phi/Psi角的sin和cos值 [phi_sin, phi_cos, psi_sin, psi_cos]")
-    print("  4: CA和关键原子之间的距离（埃）")
-    print("  5: N和关键原子之间的距离（埃）")
-    print("  6: C和关键原子之间的距离（埃）")
-    print("  7: N和C原子之间的距离（埃）")
+    print("  0: phi角的正弦值")
+    print("  1: phi角的余弦值")
+    print("  2: psi角的正弦值")
+    print("  3: psi角的余弦值")
 
 if __name__ == "__main__":
     main()
-#python node1.py --pdb-dir "G:\all" --output-dir "D:\python\classification\data" --residues-file "D:\python\classification\data\close_residues.npy" --single-pdb 24
+#python node2.py --pdb-dir "G:\all" --output-dir "D:\python\classification\data" --residues-file "D:\python\classification\data\close_residues.npy" --single-pdb 24
 
-#python node1.py --pdb-dir "G:\all" --output-dir "D:\python\classification\data" --residues-file "D:\python\classification\data\close_residues.npy"
+#python node2.py --pdb-dir "G:\all" --output-dir "D:\python\classification\data" --residues-file "D:\python\classification\data\close_residues.npy"
